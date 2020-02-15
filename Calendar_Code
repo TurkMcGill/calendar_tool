@@ -1,0 +1,225 @@
+var ss = SpreadsheetApp.getActiveSpreadsheet();
+var stp = ss.getSheetByName("Setup");
+var mtg = ss.getSheetByName("all_meetings");
+var cat = ss.getSheetByName("Rules");
+var rep = ss.getSheetByName("Report");
+var crit = ss.getSheetByName("Criteria");
+
+var mycal = stp.getRange("B1").getValue();  // e-mail address for calendar
+var cal = CalendarApp.getCalendarById(mycal);
+
+var lastRowCat = cat.getLastRow();
+var cat_list = cat.getRange(2, 1, lastRowCat, 7).getValues(); //getRange(starting Row, starting column, number of rows, number of columns)
+var color_list = crit.getRange(1,4,12,1).getValues();
+
+//var events = cal.getEvents(new Date("September 25, 2015 00:00:00 CST"), new Date("October 01, 2015 23:59:59 CST"), {search: '-project123'});
+var cal_start = stp.getRange("B2").getValue(); // start date
+var cal_end = stp.getRange("B3").getValue();  // end date
+var events = cal.getEvents(new Date(cal_start), new Date(cal_end));
+
+// This code creates a deduplicated array (dedList) from my array 'events' (parts of this code are from Cooper on StackOverflow... and I don't really understand it all)
+var dedList=[];
+var obj={eA:[]};
+for(var i=0;i<events.length;i++) {
+  var key=events[i].getTitle() + events[i].getDescription();
+  if(!obj.hasOwnProperty(key)) {
+    obj[key]={
+      title: events[i].getTitle(),
+      description: events[i].getDescription(),
+      guest_list: events[i].getGuestList(),
+      guests: events[i].getGuestList().length,
+      start: events[i].getStartTime(),
+      end: events[i].getEndTime(),
+      recurs: events[i].isRecurringEvent(),
+      duration: "",
+      creator: events[i].getCreators(),
+      color: events[i].getColor() ,
+      copies: 0,
+      category: "",
+    };
+    obj.eA.push(key);
+  }else{
+    obj[key].copies+=1; //count the copies
+  }  
+}
+for(var i=0;i<obj.eA.length;i++) {
+  dedList.push(obj[obj.eA[i]]);
+}
+
+// Update the deduplicted list with duration and category
+for(var i=0;i<dedList.length;i++) {
+  dedList[i].duration = getDur(dedList[i].start, dedList[i].end); //calculates the duration of the meeting based on start/end times
+  dedList[i].category = getCategory(i);
+}
+
+function getCategory(idx) { //Receives a 'row' and returns a category, also checks for multiple rules using AND
+  for (var i = 0; i < lastRowCat; i++) {  //Iterate through the categories
+    var eval_1 = eval(idx,cat_list[i][6], cat_list[i][0], cat_list[i][1]);
+    if (eval_1) {
+      if (cat_list[i][2] == "") { //No second rule, so return eval_1
+        return eval_1; 
+      }
+      else { //Evaluate second rule
+        var eval_2 = eval(idx, cat_list[i][6], cat_list[i][3],cat_list[i][4]); //Get second part of rule (due to "and")
+        if (eval_2) {
+          return eval_2;
+        }
+      }
+    }
+  }
+}
+
+// Sort the deduplicated list of events so the ones without a category assigned appear first
+dedList.sort(dynamicSort("category"));
+
+function dynamicSort(property) {
+    var sortOrder = 1;
+    if(property[0] === "-") {
+        sortOrder = -1;
+        property = property.substr(1);
+    }
+    return function (a,b) {
+        var result = (a[property] < b[property]) ? -1 : (a[property] > b[property]) ? 1 : 0;
+        return result * sortOrder;
+    }
+}
+
+var test = 0;
+// RULES FUNCTION ******************************************************************************************************
+function eval(idx, category, crit, value) {
+  if (typeof value === 'string') {
+    var value = value.replace(/"/g, ""); // Removes quotation marks from strings, if any were added
+  }
+  if (crit == "MEETING ORGANIZER (e-mail)" && dedList[idx].creator[0] == value) {
+    return category;  
+  }
+  if (crit == "TITLE CONTAINS (string)" && dedList[idx].title.indexOf(value)>-1) {
+    return category;  
+  }
+  if (crit == "DESCRIPTION CONTAINS (string)" && dedList[idx].description.indexOf(value)>-1) {
+    return category;  
+  }
+  if (crit == "INVITED GUESTS (number)" && dedList[idx].guests == value) {
+    return category;  
+  }
+  if (crit == "RECURS (true or false)" && dedList[idx].recurs.toString() == value.toString()) {
+    return category;  
+  }
+  if (crit == "DURATION MORE THAN (minutes)" && dedList[idx].duration > value) {
+    return category;  
+  }
+  if (crit == "DURATION LESS THAN (minutes)" && dedList[idx].duration < value) {
+    return category;  
+  }
+  if (crit == "COLOR IS (color)") {
+    var my_color = color_list[Number(dedList[idx].color)][0];
+    if (my_color == value) {
+      return category;
+    }
+  }
+    // return category;  
+  if (crit == "GUEST LIST INCLUDES (e-mail)") {  // && dedList[idx].duration < value) {
+    var temp = dedList[idx].guest_list.length;
+    for(var d=0; d < dedList[idx].guest_list.length; d++) {
+      var test = dedList[idx].guest_list[d].getEmail();
+      if (temp == value) {
+        return category
+      }
+    }          
+  } 
+  return false;
+}
+
+function getCal() {
+  Logger.clear();
+ 
+  // var header = [["Title", "Description", "Copies", "Creator", "# Guests", "Duration", "Recurs?", "Category"]]
+  // var range = stp.getRange(11,1,1,9);
+  // range.setValues(header);
+  for (var j = 0; j < dedList.length; j++) { // Iterate through all items in dedList and retrieve event property values, in order:
+    var test = dedList.length;
+    var title = dedList[j].title;
+    var description = dedList[j].description.toString().replace(/(\r\n|\n|\r)/gm, ", ");
+    var pholder = "";
+    var copies = dedList[j].copies;
+    var creator = dedList[j].creator;
+    var guests = dedList[j].guests;
+    var duration = dedList[j].duration;
+    var recurs = dedList[j].recurs;
+    if (recurs) {
+      recurs = "X";
+    }
+    else {
+      recurs = "";
+    } 
+    var category = dedList[j].category;
+    if (category === undefined) {
+      category = ""; 
+    }
+    var values = [title, pholder, description, copies, creator, guests, duration, recurs, category];
+    stp.getRange(j+12, 1, 1, 9).setValues([values]); // Write property values to the sheet row in "all_meetings"
+  }
+}
+
+function getDur(start,end){
+  var hd=new Date(start).valueOf();
+  var td=new Date(end).valueOf();
+  var sec=1000;
+  var min=60*sec;
+  var hour=60*min;
+  var day=24*hour;
+  var diff=td-hd;
+  var dur_mins = Math.floor(diff/ 60000) 
+  var days=Math.floor(diff/day);
+  var hours=Math.floor(diff%day/hour);
+  var minutes=Math.floor(diff%day%hour/min);
+  var my_time= (days + "days" + " " + hours + "hrs");
+  return dur_mins;
+  //Logger.log('%s days %s hours %s minutes',days,hours,minutes);
+  //return ('%s days %s hours %s minutes',days,hours,minutes);
+}
+
+function genReport(myArray){
+
+  var full_range = cat.getRange("B1:B").getValues();
+  var cat_range = full_range.filter(String);
+  rep.getRange(1,1,full_range.filter(String).length,1).setValues(cat_range); // Adds categories to Report sheet
+  
+  var stp_range = stp.getRange("H11:H").getValues();
+  var categories = stp_range.filter(String);
+  var occurences = {};
+  var occ_hours = {};
+
+
+  for (var i = 0; i < categories.length; i++) {
+    if (occurences[categories[i]] === undefined) {
+      occurences[categories[i]] = 1;
+      occ_hours[categories[i]] = newdeets[i][2]; //I think 2 is the duration?
+    }
+    else {
+      occurences[categories[i]]++;
+      occ_hours[categories[i]] = occ_hours[categories[i]] + newdeets[i][2];
+    }
+  }
+  var i = 0;
+}
+
+function displayMeetings() { // May not need this, it just displays all deduplicated meetings
+  mtg.clearContents(); 
+  var header = [["Event Title", "Event Description", "Guests", "Event Start", "Event End", "Duration", "Created", "Created By", "Recurs?"]]
+  var range = mtg.getRange(1,1,1,9);
+  range.setValues(header);
+
+  for (var j = 0; j < dedList.length; j++) { // Iterate through all items in dedList and retrieve event property values, in order:
+    var title = dedList[j].title;
+    var description = dedList[j].description;
+    var guests = dedList[j].guest;
+    var start = dedList[j].start;
+    var end = dedList[j].end;
+    var dur = getDur(start,end);
+    var id = dedList[j].id;
+    var copies = dedList[j].copies;
+    var values = [title, description, guests, start, id, copies];
+    mtg.getRange(j + 2, 1, 1, 6).setValues([values]); // Write property values to the sheet row in "all_meetings"
+  }
+}
